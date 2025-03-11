@@ -24,7 +24,7 @@ services:
   fastapi:
     build:
       context: ../..
-      dockerfile: app/Dockerfile
+      dockerfile: conf/docker/app/Dockerfile
     container_name: course-fastapi
     ports:
       - "8000:8000"
@@ -39,7 +39,7 @@ services:
   celery:
     build:
       context: ../..
-      dockerfile: celery/Dockerfile
+      dockerfile: conf/docker/celery/Dockerfile
     container_name: course-celery
     environment:
       - DATABASE_URL=postgresql://service:service@postgres:5432/service_db
