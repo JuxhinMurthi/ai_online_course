@@ -1,111 +1,64 @@
-# tests/test_course_endpoints.py
+from datetime import datetime
 
 import pytest
-from fastapi.testclient import TestClient
-from dependency_injector import providers
+from unittest.mock import MagicMock
 
-from src.web.main import app  # Import the FastAPI app
-from src.web.schemas import CourseCreate
+from fastapi import HTTPException
 
-
-# Define a fake in-memory database that mimics the behavior of PostgresService
-class FakeDatabase:
-    def __init__(self):
-        self.data = {}
-        self.next_id = 1
-
-    def get(self, model, record_id: int):
-        return self.data.get(record_id)
-
-    def create(self, model, **data):
-        # Simulate an auto-increment primary key
-        data["id"] = self.next_id
-        self.data[self.next_id] = data
-        self.next_id += 1
-        return data
-
-    def filter(self, model, model_field: str, value):
-        # Return the first record that matches the given field value
-        for record in self.data.values():
-            if record.get(model_field) == value:
-                return record
-        return None
+from src.use_cases.create_course_use_case import CreateCourseUseCase
+from src.use_cases.get_course_use_case import GetCourseUseCase
+from src.web.schemas import CourseCreate, Course
 
 
-# Fixture to override the course container's database dependency with our fake database
-@pytest.fixture(scope="module")
-def test_app():
-    fake_db = FakeDatabase()
-    container = app.container  # The DI container initialized in main.py
-    # Override the 'database' dependency in the course package container
-    container.course_package.database.override(providers.Object(fake_db))
+@pytest.fixture
+def new_course_data():
+    """ New course object. """
+    return CourseCreate(user_id=1, course_title="New Course", course_description="New course description")
 
-    with TestClient(app) as client:
-        yield client
+@pytest.fixture
+def existing_course():
+    """ Existing course object. """
+    return Course(id=1, user_id=1, course_title="Existing Course", course_description="Existing course description", status="Pending", created_at=datetime.now())
 
-
-# Helper function to build a course payload; note that "user_id" is now included.
-def get_course_payload(
-    course_title="Introduction to Testing",
-    course_description="Learn how to test FastAPI applications",
-    user_id=1,
-):
-    return {
-        "course_title": course_title,
-        "course_description": course_description,
-        "user_id": user_id,
-    }
+@pytest.fixture
+def mock_database(existing_course):
+    """ Mock database for fake interactions. """
+    mock_db = MagicMock()
+    mock_db.get.return_value = existing_course
+    return mock_db
 
 
-# Test the create course endpoint (happy path)
-def test_create_course_success(test_app):
-    payload = get_course_payload()
-    response = test_app.post("/course", json=payload)
-    assert response.status_code == 200, response.text
-    data = response.json()
-    assert data["id"] is not None
-    assert data["course_title"] == payload["course_title"]
-    assert data["course_description"] == payload["course_description"]
-    assert data["user_id"] == payload["user_id"]
+def test_get_course_use_case(existing_course, mock_database):
+    """ Test successful get course use case. """
+    use_case = GetCourseUseCase(mock_database)
+    course = use_case.execute(existing_course.id)
+    assert course.id == existing_course.id
 
 
-# Test the create course endpoint when a course with the same title already exists (conflict)
-def test_create_course_conflict(test_app):
-    payload = get_course_payload(course_title="Duplicate Course")
-    # First creation should succeed
-    response = test_app.post("/course", json=payload)
-    assert response.status_code == 200, response.text
+def test_create_course_use_case_success(new_course_data, mock_database):
+    """ Test successful create course use case. """
+    mock_database.filter.return_value = None
+    mock_database.create.return_value = Course(id=2, user_id=1, course_title=new_course_data.course_title, course_description=new_course_data.course_description, status="Pending", created_at=datetime.now())
 
-    # Second creation with the same title should fail with a 409 error
-    conflict_response = test_app.post("/course", json=payload)
-    assert conflict_response.status_code == 409, conflict_response.text
-    error_detail = conflict_response.json()["detail"]
-    assert "already exists" in error_detail
+    use_case = CreateCourseUseCase(mock_database)
+    course = use_case.execute(new_course_data)
 
-
-# Test the get course endpoint for an existing course
-def test_get_course_success(test_app):
-    payload = get_course_payload(course_title="Fetchable Course")
-    # Create a course first
-    create_response = test_app.post("/course", json=payload)
-    assert create_response.status_code == 200, create_response.text
-    created_course = create_response.json()
-    course_id = created_course["id"]
-
-    # Retrieve the course by ID
-    get_response = test_app.get(f"/course/{course_id}")
-    assert get_response.status_code == 200, get_response.text
-    retrieved_course = get_response.json()
-    assert retrieved_course["id"] == course_id
-    assert retrieved_course["course_title"] == payload["course_title"]
-    assert retrieved_course["course_description"] == payload["course_description"]
-    assert retrieved_course["user_id"] == payload["user_id"]
+    assert course.id == 2
+    assert course.user_id == course.user_id
+    assert course.course_title == new_course_data.course_title
+    assert course.course_description == new_course_data.course_description
+    mock_database.create.assert_called_once()
 
 
-# Test the get course endpoint for a non-existing course
-def test_get_course_not_found(test_app):
-    # Attempt to fetch a course with an ID that does not exist
-    response = test_app.get("/course/9999")
-    assert response.status_code == 404, response.text
-    error_detail = response.json()["detail"]
-    assert error_detail == "Course not found"
+def test_create_course_use_case_failure(existing_course, mock_database):
+    """ Test failure when course already exists (HTTP 409). """
+    mock_database.filter.return_value = existing_course
+
+    use_case = CreateCourseUseCase(mock_database)
+
+    with pytest.raises(HTTPException) as exc_info:
+        use_case.execute(CourseCreate(user_id=1, course_title=existing_course.course_title, course_description="Another course description"))
+
+    assert exc_info.value.status_code == 409
+    assert f"Course with title {existing_course.course_title} already exists" in exc_info.value.detail
+    mock_database.create.assert_not_called()

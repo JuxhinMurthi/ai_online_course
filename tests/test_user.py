@@ -1,98 +1,61 @@
-# import pytest
-# from fastapi.testclient import TestClient
-# from dependency_injector import providers
-#
-# from src.web.main import app  # import the FastAPI app
-# from src.containers import ApplicationContainer  # our DI container
-#
-# # Define a fake in-memory database that mimics PostgresService
-# class FakeDatabase:
-#     def __init__(self):
-#         self.data = {}
-#         self.next_id = 1
-#
-#     def get(self, model, record_id: int):
-#         return self.data.get(record_id)
-#
-#     def create(self, model, **data):
-#         # Simulate assigning an auto-increment id
-#         data["id"] = self.next_id
-#         self.data[self.next_id] = data
-#         self.next_id += 1
-#         return data
-#
-#     def filter(self, model, model_field: str, value):
-#         # Return the first match found for the given field
-#         for record in self.data.values():
-#             if record.get(model_field) == value:
-#                 return record
-#         return None
-#
-# # Fixture to override the container with our fake database
-# @pytest.fixture(scope="module")
-# def test_app():
-#     # Create a fake database instance
-#     fake_db = FakeDatabase()
-#
-#     # Override the database dependency in the ApplicationContainer's user package
-#     container: ApplicationContainer = app.container  # container created in main.py
-#     # Override the 'database' provider in the user package container
-#     container.user_package.database.override(providers.Object(fake_db))
-#
-#     # Create a TestClient using the app with overridden dependencies
-#     with TestClient(app) as client:
-#         yield client
-#
-# # Helper function to build a user payload
-# def get_user_payload(email="test@example.com", name="Test User"):
-#     return {
-#         "email": email,
-#         "name": name
-#     }
-#
-# # Test the create user endpoint (happy path)
-# def test_create_user_success(test_app):
-#     payload = get_user_payload()
-#     response = test_app.post("/user", json=payload)
-#     assert response.status_code == 200, response.text
-#     data = response.json()
-#     assert data["id"] is not None
-#     assert data["email"] == payload["email"]
-#     assert data["name"] == payload["name"]
-#
-# # Test the create user endpoint when a user already exists (conflict)
-# def test_create_user_conflict(test_app):
-#     payload = get_user_payload(email="conflict@example.com")
-#     # Create a user for the first time
-#     response = test_app.post("/user", json=payload)
-#     assert response.status_code == 200, response.text
-#
-#     # Try to create a user with the same email
-#     conflict_response = test_app.post("/user", json=payload)
-#     assert conflict_response.status_code == 409, conflict_response.text
-#     error_detail = conflict_response.json()["detail"]
-#     assert "already exists" in error_detail
-#
-# # Test the get user endpoint for an existing user
-# def test_get_user_success(test_app):
-#     payload = get_user_payload(email="getuser@example.com")
-#     # Create a user first
-#     create_response = test_app.post("/user", json=payload)
-#     assert create_response.status_code == 200, create_response.text
-#     created_user = create_response.json()
-#     user_id = created_user["id"]
-#
-#     # Retrieve the user by id
-#     get_response = test_app.get(f"/user/{user_id}")
-#     assert get_response.status_code == 200, get_response.text
-#     retrieved_user = get_response.json()
-#     assert retrieved_user["id"] == user_id
-#     assert retrieved_user["email"] == payload["email"]
-#
-# # Test the get user endpoint for a non-existing user
-# def test_get_user_not_found(test_app):
-#     # Attempt to get a user with an id that does not exist
-#     response = test_app.get("/user/9999")
-#     assert response.status_code == 404, response.text
-#     error_detail = response.json()["detail"]
-#     assert error_detail == "User not found"
+import pytest
+from unittest.mock import MagicMock
+
+from fastapi import HTTPException
+
+from src.web.schemas import UserCreate, User
+from src.use_cases.create_user_use_case import CreateUserUseCase
+from src.use_cases.get_user_use_case import GetUserUseCase
+
+
+@pytest.fixture
+def new_user_data():
+    """ New user object. """
+    return UserCreate(name="New User", email="new@user.com")
+
+@pytest.fixture
+def existing_user():
+    """ Existing user object. """
+    return User(id=1, name="Existing", email="existing@user.com")
+
+@pytest.fixture
+def mock_database(existing_user):
+    """ Mock database for fake interactions. """
+    mock_db = MagicMock()
+    mock_db.get.return_value = existing_user
+    return mock_db
+
+
+def test_get_user_use_case(existing_user, mock_database):
+    """ Test successful get user use case. """
+    use_case = GetUserUseCase(mock_database)
+    user = use_case.execute(existing_user.id)
+    assert user.id == existing_user.id
+
+
+def test_create_user_use_case_success(new_user_data, mock_database):
+    """ Test successful create user use case. """
+    mock_database.filter.return_value = None  # No existing user
+    mock_database.create.return_value = User(id=2, name=new_user_data.name, email=new_user_data.email)
+
+    use_case = CreateUserUseCase(mock_database)
+    user = use_case.execute(new_user_data)
+
+    assert user.id == 2
+    assert user.name == new_user_data.name
+    assert user.email == new_user_data.email
+    mock_database.create.assert_called_once()
+
+
+def test_create_user_use_case_failure(existing_user, mock_database):
+    """ Test failure when user already exists (HTTP 409). """
+    mock_database.filter.return_value = existing_user
+
+    use_case = CreateUserUseCase(mock_database)
+
+    with pytest.raises(HTTPException) as exc_info:
+        use_case.execute(UserCreate(name="Duplicate User", email=existing_user.email))
+
+    assert exc_info.value.status_code == 409
+    assert f"User with email {existing_user.email} already exists" in exc_info.value.detail
+    mock_database.create.assert_not_called()

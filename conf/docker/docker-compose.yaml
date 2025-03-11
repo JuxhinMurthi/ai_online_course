@@ -21,6 +21,34 @@ services:
     ports:
       - "6379:6379"
 
+  fastapi:
+    build:
+      context: ../..
+      dockerfile: app/Dockerfile
+    container_name: course-fastapi
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://service:service@postgres:5432/service_db
+      - REDIS_URL=redis://localhost:6379
+    depends_on:
+      - postgres
+      - redis
+    restart: always
+
+  celery:
+    build:
+      context: ../..
+      dockerfile: celery/Dockerfile
+    container_name: course-celery
+    environment:
+      - DATABASE_URL=postgresql://service:service@postgres:5432/service_db
+      - REDIS_URL=redis://localhost:6379
+    depends_on:
+      - postgres
+      - redis
+    restart: always
+
 volumes:
   postgres_data:
     driver: local

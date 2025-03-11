@@ -20,5 +20,5 @@ class Course(Base):
     course_title = Column(String(255), nullable=False)
     course_description = Column(Text, nullable=False)
     ai_summary = Column(Text, nullable=True)
-    status = Column(String(50), default="pending")
+    status = Column(String(50), default="Pending")
     created_at = Column(TIMESTAMP, server_default=func.now())
